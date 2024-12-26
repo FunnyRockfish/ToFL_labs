@@ -57,14 +57,6 @@ type Parser struct {
 	maxGroups  int
 }
 
-type Validator struct {
-	maxGroups     int
-	currentGroups []int
-	definedGroups map[int]bool
-	errors        []string
-	log           *zap.SugaredLogger
-}
-
 func NewParser(lexer *lexer.Lexer) *Parser {
 	p := &Parser{
 		lexer:     lexer,
@@ -357,102 +349,249 @@ func PrintAST(node ASTNode, indent string) {
 	}
 }
 
-func NewValidator(maxGroups int, log *zap.SugaredLogger) *Validator {
+// ------------------ВАЛИДАТОР----------------//
+
+func (v *Validator) Errors() []string {
+	return v.errors
+}
+
+type Validator struct {
+	log    *zap.SugaredLogger
+	errors []string
+
+	maxGroups int
+
+	groupsByNumber map[int]*Group
+
+	checkingSubPattern map[int]bool
+}
+
+func NewValidator(log *zap.SugaredLogger) *Validator {
 	return &Validator{
-		errors:        make([]string, 0),
-		maxGroups:     maxGroups,
-		log:           log,
-		definedGroups: map[int]bool{},
+		log:    log,
+		errors: []string{},
+
+		maxGroups:          9,
+		groupsByNumber:     make(map[int]*Group),
+		checkingSubPattern: make(map[int]bool),
 	}
 }
 
-func (v *Validator) Validate(node ASTNode) {
-	v.visit(node)
+func (v *Validator) Validate(root ASTNode) {
+	v.collectAllGroups(root)
+	v.checkLookAheadConstraints(root)
 
-	if len(v.errors) > 0 {
-		v.log.Error("Ошибки в регулярном выражении: ")
-		for _, e := range v.errors {
-			v.log.Errorf("- %s\n", e)
-		}
+	inSet := make(map[int]bool)
+	_, err := v.computeDefGroups(root, inSet)
+	if err != nil {
+		v.errors = append(v.errors, err.Error())
+	}
+
+	if len(v.errors) == 0 {
+		v.log.Infof("Регулярное выражение корректно.")
 	} else {
-		v.log.Info("Регулярное выражение корректно.")
+		v.log.Errorf("Ошибки в регулярном выражении:")
+		for _, e := range v.errors {
+			v.log.Errorf("- %s", e)
+		}
 	}
 }
 
-func (v *Validator) visit(node ASTNode) {
+func (v *Validator) collectAllGroups(node ASTNode) {
 	switch n := node.(type) {
-	case *Char:
-	// ничего
 	case *Concat:
-		v.visit(n.left)
-		v.visit(n.right)
-	case *Star:
-		v.visit(n.node)
+		v.collectAllGroups(n.left)
+		v.collectAllGroups(n.right)
+
 	case *Union:
-		v.visit(n.left)
-		v.visit(n.right)
+		v.collectAllGroups(n.left)
+		v.collectAllGroups(n.right)
+
+	case *Star:
+		v.collectAllGroups(n.node)
+
 	case *Group:
 		if n.capturing {
 			if n.groupNumber > v.maxGroups {
-				v.errors = append(v.errors, fmt.Sprintf("Превышено максимальное количество групп захвата (%d)", v.maxGroups))
+				v.errors = append(v.errors,
+					fmt.Sprintf("Превышено максимальное количество групп (>%d)", v.maxGroups))
 			}
-			v.definedGroups[n.groupNumber] = true
-			v.visit(n.node)
-		} else {
-			v.visit(n.node)
+			v.groupsByNumber[n.groupNumber] = n
 		}
-	case *BackReference:
-		if !v.definedGroups[n.GroupNumber] {
-			v.errors = append(v.errors, fmt.Sprintf("Ссылка на неинициализированную группу \\%d", n.GroupNumber))
-		}
+		v.collectAllGroups(n.node)
+
 	case *LookAhead:
-		if v.containsGroup(n.node) {
-			v.errors = append(v.errors, "Группы захвата не разрешены внутри опережающих проверок")
-		}
-		if v.containsLookAhead(n.node) {
-			v.errors = append(v.errors, "Опережающие проверки не могут содержать другие опережающие проверки")
-		}
-		v.visit(n.node)
-	case *SubPatternReference:
-		if !v.definedGroups[n.GroupNumber] {
-			v.errors = append(v.errors, fmt.Sprintf("Ссылка на неинициализированный подпаттерн (?%d)", n.GroupNumber))
-		}
+		v.collectAllGroups(n.node)
+
+		// BackReference, SubPatternReference, Char – ничего собирать
 	}
 }
 
-func (v *Validator) containsGroup(node ASTNode) bool {
+func (v *Validator) checkLookAheadConstraints(node ASTNode) {
+	switch n := node.(type) {
+	case *Concat:
+		v.checkLookAheadConstraints(n.left)
+		v.checkLookAheadConstraints(n.right)
+
+	case *Union:
+		v.checkLookAheadConstraints(n.left)
+		v.checkLookAheadConstraints(n.right)
+
+	case *Star:
+		v.checkLookAheadConstraints(n.node)
+
+	case *Group:
+		v.checkLookAheadConstraints(n.node)
+
+	case *LookAhead:
+		if v.containsCapturingGroup(n.node) {
+			v.errors = append(v.errors,
+				"Запрещено использовать группы захвата внутри опережающей проверки (LookAhead)")
+		}
+		if v.containsLookAhead(n.node) {
+			v.errors = append(v.errors,
+				"Запрещено использовать вложенные опережающие проверки (LookAhead внутри LookAhead)")
+		}
+		v.checkLookAheadConstraints(n.node)
+
+	default:
+		// ...
+	}
+}
+
+func (v *Validator) containsCapturingGroup(node ASTNode) bool {
 	switch n := node.(type) {
 	case *Group:
 		if n.capturing {
 			return true
 		}
-	case *LookAhead:
-		return true
+		return v.containsCapturingGroup(n.node)
 	case *Concat:
-		return v.containsGroup(n.left) || v.containsGroup(n.right)
+		return v.containsCapturingGroup(n.left) || v.containsCapturingGroup(n.right)
 	case *Union:
-		return v.containsGroup(n.left) || v.containsGroup(n.right)
+		return v.containsCapturingGroup(n.left) || v.containsCapturingGroup(n.right)
 	case *Star:
-		return v.containsGroup(n.node)
+		return v.containsCapturingGroup(n.node)
+	case *LookAhead:
+		return v.containsCapturingGroup(n.node)
 	default:
 		return false
 	}
-	return false
 }
 
 func (v *Validator) containsLookAhead(node ASTNode) bool {
-	switch node.(type) {
-	case *Group:
-		return v.containsLookAhead(node.(*Group).node)
+	switch n := node.(type) {
 	case *LookAhead:
 		return true
+	case *Group:
+		return v.containsLookAhead(n.node)
 	case *Concat:
-		return v.containsLookAhead(node.(*Concat).right) || v.containsLookAhead(node.(*Concat).left)
+		return v.containsLookAhead(n.left) || v.containsLookAhead(n.right)
 	case *Union:
-		return v.containsLookAhead(node.(*Union).right) || v.containsLookAhead(node.(*Union).left)
+		return v.containsLookAhead(n.left) || v.containsLookAhead(n.right)
 	case *Star:
-		return v.containsLookAhead(node.(*Star).node)
+		return v.containsLookAhead(n.node)
 	default:
 		return false
 	}
+}
+
+func (v *Validator) computeDefGroups(node ASTNode, inSet map[int]bool) (map[int]bool, error) {
+	switch n := node.(type) {
+
+	case *Char:
+		return copySet(inSet), nil
+
+	case *Concat:
+		// Сначала левая часть
+		leftOut, err := v.computeDefGroups(n.left, copySet(inSet))
+		if err != nil {
+			return nil, err
+		}
+		// Затем правая
+		rightOut, err := v.computeDefGroups(n.right, leftOut)
+		if err != nil {
+			return nil, err
+		}
+		return rightOut, nil
+
+	case *Union:
+		// Обе ветки независимы, потом пересекаем
+		leftOut, err := v.computeDefGroups(n.left, copySet(inSet))
+		if err != nil {
+			return nil, err
+		}
+		rightOut, err := v.computeDefGroups(n.right, copySet(inSet))
+		if err != nil {
+			return nil, err
+		}
+		return intersectSets(leftOut, rightOut), nil
+
+	case *Star:
+		// 0 раз (тогда возвращается inSet) или >=1 раз (childOut)
+		childOut, err := v.computeDefGroups(n.node, copySet(inSet))
+		if err != nil {
+			return nil, err
+		}
+		return intersectSets(inSet, childOut), nil
+
+	case *Group:
+		if n.capturing {
+			childOut, err := v.computeDefGroups(n.node, copySet(inSet))
+			if err != nil {
+				return nil, err
+			}
+			childOut[n.groupNumber] = true
+			return childOut, nil
+		} else {
+			return v.computeDefGroups(n.node, inSet)
+		}
+
+	case *LookAhead:
+		_, err := v.computeDefGroups(n.node, copySet(inSet))
+		return copySet(inSet), err
+
+	case *BackReference:
+		if !inSet[n.GroupNumber] {
+			return nil, fmt.Errorf("ссылка на неинициализированную группу \\%d", n.GroupNumber)
+		}
+		return copySet(inSet), nil
+
+	case *SubPatternReference:
+		grp := v.groupsByNumber[n.GroupNumber]
+		if grp == nil {
+			return nil, fmt.Errorf("ссылка на несуществующую группу (?%d)", n.GroupNumber)
+		}
+		if v.checkingSubPattern[n.GroupNumber] {
+		} else {
+			v.checkingSubPattern[n.GroupNumber] = true
+			_, err := v.computeDefGroups(grp.node, copySet(inSet))
+			v.checkingSubPattern[n.GroupNumber] = false
+			if err != nil {
+				return nil, err
+			}
+		}
+		return copySet(inSet), nil
+
+	default:
+		return nil, fmt.Errorf("неизвестный тип узла при валидации")
+	}
+}
+
+func copySet(m map[int]bool) map[int]bool {
+	res := make(map[int]bool, len(m))
+	for k := range m {
+		res[k] = true
+	}
+	return res
+}
+
+func intersectSets(a, b map[int]bool) map[int]bool {
+	res := make(map[int]bool)
+	for k := range a {
+		if b[k] {
+			res[k] = true
+		}
+	}
+	return res
 }
