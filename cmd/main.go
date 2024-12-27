@@ -25,21 +25,21 @@ func main() {
 		regex string
 		valid bool
 	}{
+		{"(a|b)*", true},
 		// Позитивные кейсы
-		{"((abc)|ac(d)|(?2))|(?3)", true},
-		{"(aa|bb)(?1)", true},
+		//{"((abc)|ac(d)|(?2))|(?3)", true},
+		/*{"(aa|bb)(?1)", true},
 		{"(a|(bb))(a|(?2))", true},
 		{"(a|(b|c))d", true},
 		{"((a|b)c)*", true},
 		{"(a)(?1)(a|(b|c))", true},
 		{"(a*|(?:b|c))d", true},
 		{"(a|b)(a|(bb(?4)))(a)", true},
-		{"(a*|(?:b|c))d", true},
+		{"(a*|(?:b|c))d", true},*/
 
-		{"(?=a)b", true},
-		{"a(?=b|c)d", true},
-		{"(a(?=b))c", true}, /*(?=a)b
-		a(?=b|c)d*/
+		//{"(?=a)b", true},
+		/*{"a(?=b|c)d", true},
+		{"(a(?=b))c", true},
 
 		// Негативные кейсы
 		{"a|b)", false},
@@ -50,7 +50,7 @@ func main() {
 		{"(?=(a))", false},
 		{"(?=a(?=b))", false},
 		{"(?:aab)(?1)", false},
-		{"((abbb)|(baaa))(?2)(?1)\\2", false},
+		{"((abbb)|(baaa))(?2)(?1)\\2", false},*/
 	}
 
 	for _, tr := range testRegexes {
@@ -103,6 +103,12 @@ func main() {
 		defer file.Close()
 
 		parser.PrintASTDot(ast, file)
+
+		cfgBuilder := parser.NewCFGBuilder()
+		cfgBuilder.BuildCFGbyAST(ast)
+
+		cfgBuilder.PrintCFG()
+		//fmt.Println(cfgBuilder.Grammar)
 	}
 }
 

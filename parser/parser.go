@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"go.uber.org/zap"
 	"lab4_1/lexer"
@@ -594,4 +595,184 @@ func intersectSets(a, b map[int]bool) map[int]bool {
 		}
 	}
 	return res
+}
+
+type ContextFreeGrammar struct {
+	Grammar          map[string][]string
+	unionCounter     int
+	concatCounter    int
+	starCounter      int
+	lookAheadCounter int
+	charCounter      int
+	charCache        map[rune]string
+	firstSymbol      string
+}
+
+func NewCFGBuilder() *ContextFreeGrammar {
+	return &ContextFreeGrammar{
+		Grammar:          map[string][]string{},
+		unionCounter:     0,
+		concatCounter:    0,
+		starCounter:      0,
+		lookAheadCounter: 0,
+		charCounter:      0,
+		charCache:        make(map[rune]string),
+		firstSymbol:      "",
+	}
+}
+
+func (cfg *ContextFreeGrammar) BuildCFGbyAST(node ASTNode) string {
+	switch n := node.(type) {
+	case *Union:
+		// Генерируем уникальный нетерминал для текущего Union
+		nonTerminal := "U" + strconv.Itoa(cfg.unionCounter)
+		if cfg.firstSymbol == "" {
+			cfg.firstSymbol = nonTerminal
+			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+		}
+		cfg.unionCounter++
+
+		// Обрабатываем левую и правую ветви
+		leftSymbol := cfg.BuildCFGbyAST(n.left)
+		rightSymbol := cfg.BuildCFGbyAST(n.right)
+
+		// Добавляем альтернативы в грамматику
+		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], leftSymbol)
+		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], rightSymbol)
+
+		// Возвращаем уникальный нетерминал
+		return nonTerminal
+
+	case *Group:
+		// Группы захвата получают уникальный нетерминал на основе groupNumber
+		nonTerminal := "G" + strconv.Itoa(n.groupNumber)
+
+		if cfg.firstSymbol == "" {
+			cfg.firstSymbol = nonTerminal
+			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+		}
+
+		// Проверяем, был ли этот нетерминал уже создан
+		if _, exists := cfg.Grammar[nonTerminal]; !exists {
+			// Если нет, обрабатываем содержимое группы
+			groupBody := cfg.BuildCFGbyAST(n.node)
+			cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], groupBody)
+		}
+
+		// Возвращаем нетерминал группы
+		return nonTerminal
+
+	case *Concat:
+		// Генерируем уникальный нетерминал для текущей конкатенации
+		nonTerminal := "C" + strconv.Itoa(cfg.concatCounter)
+		cfg.concatCounter++
+
+		if cfg.firstSymbol == "" {
+			cfg.firstSymbol = nonTerminal
+			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+		}
+
+		// Обрабатываем левую и правую части
+		leftSymbol := cfg.BuildCFGbyAST(n.left)
+		rightSymbol := cfg.BuildCFGbyAST(n.right)
+
+		// Объединяем символы в одну продукцию
+		concatenation := leftSymbol + " " + rightSymbol
+		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], concatenation)
+
+		// Возвращаем уникальный нетерминал
+		return nonTerminal
+
+	case *Char:
+		sym, exists := cfg.charCache[n.value]
+		if exists {
+			return sym
+		}
+
+		nonTerminal := strings.ToUpper(string(n.value))
+
+		if cfg.firstSymbol == "" {
+			cfg.firstSymbol = nonTerminal
+			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+		}
+
+		// 3. Добавляем правило "nonTerminal -> n.value"
+		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], string(n.value))
+
+		// 4. Запомним в charCache
+		cfg.charCache[n.value] = nonTerminal
+
+		return nonTerminal
+
+	case *Star:
+		// Генерируем уникальный нетерминал для текущей звезды
+		nonTerminal := "S" + strconv.Itoa(cfg.starCounter)
+		cfg.starCounter++
+
+		if cfg.firstSymbol == "" {
+			cfg.firstSymbol = nonTerminal
+			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+		}
+
+		// Обрабатываем ребёнка звезды
+		childSymbol := cfg.BuildCFGbyAST(n.node)
+
+		// Добавляем правила для звезды
+		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], "ε")                         // S -> ε
+		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], nonTerminal+" "+childSymbol) // S -> S X
+
+		// Возвращаем уникальный нетерминал
+		return nonTerminal
+
+	case *SubPatternReference:
+		// Просто возвращаем ссылку на группу (предполагается, что группа уже обработана)
+		nonTerminal := "G" + strconv.Itoa(n.GroupNumber)
+
+		if cfg.firstSymbol == "" {
+			cfg.firstSymbol = nonTerminal
+			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+		}
+		return nonTerminal
+
+	case *BackReference:
+		nonTerminal := "G" + strconv.Itoa(n.GroupNumber)
+
+		if cfg.firstSymbol == "" {
+			cfg.firstSymbol = nonTerminal
+			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+		}
+
+		return nonTerminal
+	case *LookAhead:
+		fmt.Println("here")
+
+		nonTerminal := "L" + strconv.Itoa(cfg.lookAheadCounter)
+		cfg.lookAheadCounter++
+
+		if cfg.firstSymbol == "" {
+			cfg.firstSymbol = nonTerminal
+			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+		}
+
+		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], "ε")
+		return nonTerminal
+
+	default:
+		// Если узел неизвестного типа, выводим ошибку
+		fmt.Printf("Неизвестный тип узла: %T\n", n)
+		return ""
+	}
+}
+
+func (cfg *ContextFreeGrammar) PrintCFG() {
+	fmt.Println()
+	for nt, terms := range cfg.Grammar {
+		production := nt + " -> "
+		for _, term := range terms {
+			production += term + " | "
+		}
+		// Удаляем последний " | "
+		production = strings.TrimSuffix(production, " | ")
+		fmt.Println(production)
+	}
 }
