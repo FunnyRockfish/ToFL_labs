@@ -1,11 +1,15 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net/http"
 	"os"
-	"regexp"
 	"strings"
 
+	"github.com/gorilla/mux"
+	"lab4_1/domain"
 	"lab4_1/lexer"
 	"lab4_1/logger"
 	"lab4_1/parser"
@@ -20,117 +24,85 @@ const (
 )
 
 func main() {
-	log := logger.CreateLogger()
-	testRegexes := []struct {
-		regex string
-		valid bool
-	}{
-		{"(a|b)*", true},
-		// Позитивные кейсы
-		//{"((abc)|ac(d)|(?2))|(?3)", true},
-		/*{"(aa|bb)(?1)", true},
-		{"(a|(bb))(a|(?2))", true},
-		{"(a|(b|c))d", true},
-		{"((a|b)c)*", true},
-		{"(a)(?1)(a|(b|c))", true},
-		{"(a*|(?:b|c))d", true},
-		{"(a|b)(a|(bb(?4)))(a)", true},
-		{"(a*|(?:b|c))d", true},*/
+	r := mux.NewRouter()
+	r.HandleFunc("/buildGrammar", corsMiddleware(doSkeletonGrammar)).Methods(http.MethodPost, http.MethodOptions)
 
-		//{"(?=a)b", true},
-		/*{"a(?=b|c)d", true},
-		{"(a(?=b))c", true},
-
-		// Негативные кейсы
-		{"a|b)", false},
-		{"((((a|b)))", false},
-		{"(?3)(a|(b|c))", false},
-		{"((a)(b)(c)(d)(e)(f)(g)(h)(i)(j))", false},
-		{"(a)(?2)", false},
-		{"(?=(a))", false},
-		{"(?=a(?=b))", false},
-		{"(?:aab)(?1)", false},
-		{"((abbb)|(baaa))(?2)(?1)\\2", false},*/
+	port := "8010"
+	fmt.Printf("Сервер запущен на http://localhost:%s\n", port)
+	if err := http.ListenAndServe(":"+port, r); err != nil {
+		fmt.Printf("Ошибка запуска сервера: %s\n", err.Error())
 	}
+}
 
-	for _, tr := range testRegexes {
-		fmt.Printf("Регулярное выражение: %s\n", tr.regex)
+// Middleware для обработки CORS и OPTIONS-запросов
+func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Добавляем CORS-заголовки
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 
-		if !strings.Contains(tr.regex, "?=") {
-			preparedRegex := replaceElems(tr.regex)
-			isRegexValid := checkRegexWithGo(preparedRegex)
-			if !isRegexValid {
-				log.Error("НЕКОРРЕКТНЫЙ СИНТАКСИС РЕГЕКСА! ЧТО ТО ГДЕ ТО НЕ ТО НАПИСАНО")
-				continue
-			}
-		}
-
-		lex := lexer.NewLexer(tr.regex)
-		pars := parser.NewParser(lex)
-
-		ast, err := pars.Parse()
-
-		if err != nil {
-			// Вывод ошибки красным
-			fmt.Printf("%sОшибка при парсинге: %s%s\n", Red, err.Error(), Reset)
-			continue
-		}
-
-		fmt.Println("Построенное AST:")
-		parser.PrintAST(ast, "")
-
-		validator := parser.NewValidator(log)
-		validator.Validate(ast)
-
-		// Проверка наличия ошибок в валидаторе
-		if len(validator.Errors()) > 0 && !tr.valid {
-			fmt.Printf("%sТест успешно пройден.%s\n", Green, Reset)
-		} else if len(validator.Errors()) > 0 && tr.valid {
-			fmt.Printf("%sТест провален.%s\n", Red, Reset)
-		} else if len(validator.Errors()) == 0 && tr.valid {
-			fmt.Printf("%sТест успешно пройден.%s\n", Green, Reset)
-		} else {
-			fmt.Printf("%sТест провален.%s\n", Red, Reset)
-		}
-
-		fmt.Println()
-
-		file, err := os.Create("ast.dot")
-		if err != nil {
-			fmt.Printf("%sОшибка при создании файла: %s%s\n", Red, err.Error(), Reset)
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
 			return
 		}
-		defer file.Close()
 
-		parser.PrintASTDot(ast, file)
-
-		cfgBuilder := parser.NewCFGBuilder()
-		cfgBuilder.BuildCFGbyAST(ast)
-
-		cfgBuilder.PrintCFG()
-		//fmt.Println(cfgBuilder.Grammar)
+		next.ServeHTTP(w, r)
 	}
 }
 
-func checkRegexWithGo(regex string) bool {
-	fmt.Println("Check for: ", regex)
-	_, err := regexp.Compile(regex)
-	return err == nil
-}
+func doSkeletonGrammar(w http.ResponseWriter, r *http.Request) {
+	log := logger.CreateLogger()
 
-func replaceElems(regex string) string {
-	pattern := regexp.MustCompile(`\\[1-9]|\?[1-9]|\?:`)
+	var regexReq domain.RegexReq
+	err := json.NewDecoder(r.Body).Decode(&regexReq)
+	if err != nil {
+		http.Error(w, "Ошибка декодирования JSON", http.StatusBadRequest)
+		return
+	}
 
-	replaced := pattern.ReplaceAllStringFunc(regex, func(match string) string {
-		if strings.HasPrefix(match, `\`) {
-			return fmt.Sprint("a", match[2:])
-		} else if strings.HasPrefix(match, `?`) {
-			return fmt.Sprint("b", match[2:])
-		} else if strings.HasPrefix(match, `?:`) {
-			return fmt.Sprint("c", match[2:])
-		}
-		return match
-	})
+	rg := regexReq.Rg
+	lex := lexer.NewLexer(rg)
+	pars := parser.NewParser(lex)
 
-	return replaced
+	ast, err := pars.Parse()
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Ошибка парсинга: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	validator := parser.NewValidator(log)
+	isCorrect, errors := validator.Validate(ast)
+
+	fileName := "ast.dot"
+	file, err := os.Create(fileName)
+	if err != nil {
+		http.Error(w, "Ошибка при создании файла AST", http.StatusInternalServerError)
+		return
+	}
+	defer file.Close()
+	parser.PrintASTDot(ast, file)
+
+	fileContent, err := ioutil.ReadFile(fileName)
+	if err != nil {
+		http.Error(w, "Ошибка при чтении файла AST", http.StatusInternalServerError)
+		return
+	}
+	dotString := string(fileContent)
+	dotLines := strings.Split(dotString, "\n")
+
+	cfgBuilder := parser.NewCFGBuilder()
+	cfgBuilder.BuildCFGbyAST(ast)
+	grammar := cfgBuilder.PrintCFG()
+
+	response := domain.RegexResponse{
+		IsCorrect: isCorrect,
+		Errors:    errors,
+		AST:       dotLines,
+		Grammar:   grammar,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(response)
 }

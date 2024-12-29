@@ -107,7 +107,7 @@ func (p *Parser) parseTerm() (ASTNode, error) {
 		node = &BackReference{GroupNumber: num}
 		p.NextToken()
 	case lexer.TOKEN_SUBPATTERN_REFERENCE:
-		num, err := strconv.Atoi(p.currentToken.Value) // Изменено на p.currentToken.Value без "(?"
+		num, err := strconv.Atoi(p.currentToken.Value)
 		if err != nil {
 			return nil, fmt.Errorf("недопустимая ссылка на подпаттерн: %s", p.currentToken.Value)
 		}
@@ -231,7 +231,6 @@ func PrintASTDot(node ASTNode, writer io.Writer) {
 	nodeID := 0
 	nodeMap := make(map[ASTNode]int)
 
-	// Рекурсивная функция для обхода AST и создания узлов и связей
 	var traverse func(n ASTNode) int
 	traverse = func(n ASTNode) int {
 		if id, exists := nodeMap[n]; exists {
@@ -268,12 +267,10 @@ func PrintASTDot(node ASTNode, writer io.Writer) {
 			label = "Unknown"
 		}
 
-		// Экранирование кавычек в метках
 		label = escapeString(label)
 
 		fmt.Fprintf(writer, "    node%d [label=\"%s\"];\n", currentID, label)
 
-		// Создание связей между узлами
 		switch n := n.(type) {
 		case *Concat:
 			leftID := traverse(n.left)
@@ -309,10 +306,8 @@ func PrintASTDot(node ASTNode, writer io.Writer) {
 	fmt.Fprintln(writer, "}")
 }
 
-// экранирует кавычки и другие специальные символы в строке
 func escapeString(s string) string {
 	s = strconv.Quote(s)
-	// Убираем начальные и конечные кавычки, добавленные strconv.Quote
 	return s[1 : len(s)-1]
 }
 
@@ -378,7 +373,7 @@ func NewValidator(log *zap.SugaredLogger) *Validator {
 	}
 }
 
-func (v *Validator) Validate(root ASTNode) {
+func (v *Validator) Validate(root ASTNode) (bool, []string) {
 	v.collectAllGroups(root)
 	v.checkLookAheadConstraints(root)
 
@@ -390,11 +385,13 @@ func (v *Validator) Validate(root ASTNode) {
 
 	if len(v.errors) == 0 {
 		v.log.Infof("Регулярное выражение корректно.")
+		return true, nil
 	} else {
 		v.log.Errorf("Ошибки в регулярном выражении:")
 		for _, e := range v.errors {
 			v.log.Errorf("- %s", e)
 		}
+		return false, v.errors
 	}
 }
 
@@ -423,8 +420,6 @@ func (v *Validator) collectAllGroups(node ASTNode) {
 
 	case *LookAhead:
 		v.collectAllGroups(n.node)
-
-		// BackReference, SubPatternReference, Char – ничего собирать
 	}
 }
 
@@ -456,7 +451,6 @@ func (v *Validator) checkLookAheadConstraints(node ASTNode) {
 		v.checkLookAheadConstraints(n.node)
 
 	default:
-		// ...
 	}
 }
 
@@ -504,12 +498,10 @@ func (v *Validator) computeDefGroups(node ASTNode, inSet map[int]bool) (map[int]
 		return copySet(inSet), nil
 
 	case *Concat:
-		// Сначала левая часть
 		leftOut, err := v.computeDefGroups(n.left, copySet(inSet))
 		if err != nil {
 			return nil, err
 		}
-		// Затем правая
 		rightOut, err := v.computeDefGroups(n.right, leftOut)
 		if err != nil {
 			return nil, err
@@ -517,7 +509,6 @@ func (v *Validator) computeDefGroups(node ASTNode, inSet map[int]bool) (map[int]
 		return rightOut, nil
 
 	case *Union:
-		// Обе ветки независимы, потом пересекаем
 		leftOut, err := v.computeDefGroups(n.left, copySet(inSet))
 		if err != nil {
 			return nil, err
@@ -529,7 +520,6 @@ func (v *Validator) computeDefGroups(node ASTNode, inSet map[int]bool) (map[int]
 		return intersectSets(leftOut, rightOut), nil
 
 	case *Star:
-		// 0 раз (тогда возвращается inSet) или >=1 раз (childOut)
 		childOut, err := v.computeDefGroups(n.node, copySet(inSet))
 		if err != nil {
 			return nil, err
@@ -606,6 +596,7 @@ type ContextFreeGrammar struct {
 	charCounter      int
 	charCache        map[rune]string
 	firstSymbol      string
+	Order            []string
 }
 
 func NewCFGBuilder() *ContextFreeGrammar {
@@ -618,69 +609,73 @@ func NewCFGBuilder() *ContextFreeGrammar {
 		charCounter:      0,
 		charCache:        make(map[rune]string),
 		firstSymbol:      "",
+		Order:            make([]string, 0),
 	}
 }
 
 func (cfg *ContextFreeGrammar) BuildCFGbyAST(node ASTNode) string {
 	switch n := node.(type) {
 	case *Union:
-		// Генерируем уникальный нетерминал для текущего Union
 		nonTerminal := "U" + strconv.Itoa(cfg.unionCounter)
+		cfg.unionCounter++
+
 		if cfg.firstSymbol == "" {
 			cfg.firstSymbol = nonTerminal
 			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+			cfg.Order = append(cfg.Order, "S")
 		}
-		cfg.unionCounter++
 
-		// Обрабатываем левую и правую ветви
+		if nonTerminal != "S" && !contains(cfg.Order, nonTerminal) {
+			cfg.Order = append(cfg.Order, nonTerminal)
+		}
+
 		leftSymbol := cfg.BuildCFGbyAST(n.left)
 		rightSymbol := cfg.BuildCFGbyAST(n.right)
-
-		// Добавляем альтернативы в грамматику
 		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], leftSymbol)
 		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], rightSymbol)
 
-		// Возвращаем уникальный нетерминал
 		return nonTerminal
 
 	case *Group:
-		// Группы захвата получают уникальный нетерминал на основе groupNumber
 		nonTerminal := "G" + strconv.Itoa(n.groupNumber)
 
 		if cfg.firstSymbol == "" {
 			cfg.firstSymbol = nonTerminal
 			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+			cfg.Order = append(cfg.Order, "S")
 		}
 
-		// Проверяем, был ли этот нетерминал уже создан
+		if nonTerminal != "S" && !contains(cfg.Order, nonTerminal) {
+			cfg.Order = append(cfg.Order, nonTerminal)
+		}
+
 		if _, exists := cfg.Grammar[nonTerminal]; !exists {
-			// Если нет, обрабатываем содержимое группы
 			groupBody := cfg.BuildCFGbyAST(n.node)
 			cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], groupBody)
 		}
 
-		// Возвращаем нетерминал группы
 		return nonTerminal
 
 	case *Concat:
-		// Генерируем уникальный нетерминал для текущей конкатенации
 		nonTerminal := "C" + strconv.Itoa(cfg.concatCounter)
 		cfg.concatCounter++
 
 		if cfg.firstSymbol == "" {
 			cfg.firstSymbol = nonTerminal
 			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+			cfg.Order = append(cfg.Order, "S")
 		}
 
-		// Обрабатываем левую и правую части
+		if nonTerminal != "S" && !contains(cfg.Order, nonTerminal) {
+			cfg.Order = append(cfg.Order, nonTerminal)
+		}
+
 		leftSymbol := cfg.BuildCFGbyAST(n.left)
 		rightSymbol := cfg.BuildCFGbyAST(n.right)
 
-		// Объединяем символы в одну продукцию
 		concatenation := leftSymbol + " " + rightSymbol
 		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], concatenation)
 
-		// Возвращаем уникальный нетерминал
 		return nonTerminal
 
 	case *Char:
@@ -694,44 +689,52 @@ func (cfg *ContextFreeGrammar) BuildCFGbyAST(node ASTNode) string {
 		if cfg.firstSymbol == "" {
 			cfg.firstSymbol = nonTerminal
 			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+			cfg.Order = append(cfg.Order, "S") // Добавляем S первым
 		}
 
-		// 3. Добавляем правило "nonTerminal -> n.value"
+		if nonTerminal != "S" && !contains(cfg.Order, nonTerminal) {
+			cfg.Order = append(cfg.Order, nonTerminal)
+		}
+
 		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], string(n.value))
 
-		// 4. Запомним в charCache
 		cfg.charCache[n.value] = nonTerminal
 
 		return nonTerminal
 
 	case *Star:
-		// Генерируем уникальный нетерминал для текущей звезды
 		nonTerminal := "S" + strconv.Itoa(cfg.starCounter)
 		cfg.starCounter++
 
 		if cfg.firstSymbol == "" {
 			cfg.firstSymbol = nonTerminal
 			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+			cfg.Order = append(cfg.Order, "S")
 		}
 
-		// Обрабатываем ребёнка звезды
+		if nonTerminal != "S" && !contains(cfg.Order, nonTerminal) {
+			cfg.Order = append(cfg.Order, nonTerminal)
+		}
 		childSymbol := cfg.BuildCFGbyAST(n.node)
 
-		// Добавляем правила для звезды
 		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], "ε")                         // S -> ε
 		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], nonTerminal+" "+childSymbol) // S -> S X
 
-		// Возвращаем уникальный нетерминал
 		return nonTerminal
 
 	case *SubPatternReference:
-		// Просто возвращаем ссылку на группу (предполагается, что группа уже обработана)
 		nonTerminal := "G" + strconv.Itoa(n.GroupNumber)
 
 		if cfg.firstSymbol == "" {
 			cfg.firstSymbol = nonTerminal
 			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+			cfg.Order = append(cfg.Order, "S")
 		}
+
+		if nonTerminal != "S" && !contains(cfg.Order, nonTerminal) {
+			cfg.Order = append(cfg.Order, nonTerminal)
+		}
+
 		return nonTerminal
 
 	case *BackReference:
@@ -740,9 +743,15 @@ func (cfg *ContextFreeGrammar) BuildCFGbyAST(node ASTNode) string {
 		if cfg.firstSymbol == "" {
 			cfg.firstSymbol = nonTerminal
 			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+			cfg.Order = append(cfg.Order, "S") // Добавляем S первым
+		}
+
+		if nonTerminal != "S" && !contains(cfg.Order, nonTerminal) {
+			cfg.Order = append(cfg.Order, nonTerminal)
 		}
 
 		return nonTerminal
+
 	case *LookAhead:
 		fmt.Println("here")
 
@@ -752,27 +761,46 @@ func (cfg *ContextFreeGrammar) BuildCFGbyAST(node ASTNode) string {
 		if cfg.firstSymbol == "" {
 			cfg.firstSymbol = nonTerminal
 			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
+			cfg.Order = append(cfg.Order, "S") // Добавляем S первым
+		}
+
+		if nonTerminal != "S" && !contains(cfg.Order, nonTerminal) {
+			cfg.Order = append(cfg.Order, nonTerminal)
 		}
 
 		cfg.Grammar[nonTerminal] = append(cfg.Grammar[nonTerminal], "ε")
 		return nonTerminal
 
 	default:
-		// Если узел неизвестного типа, выводим ошибку
 		fmt.Printf("Неизвестный тип узла: %T\n", n)
 		return ""
 	}
 }
 
-func (cfg *ContextFreeGrammar) PrintCFG() {
+func contains(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+func (cfg *ContextFreeGrammar) PrintCFG() []string {
+	grammar := make([]string, 0)
 	fmt.Println()
-	for nt, terms := range cfg.Grammar {
+	for _, nt := range cfg.Order {
+		terms, exists := cfg.Grammar[nt]
+		if !exists {
+			continue
+		}
 		production := nt + " -> "
 		for _, term := range terms {
 			production += term + " | "
 		}
-		// Удаляем последний " | "
 		production = strings.TrimSuffix(production, " | ")
+		grammar = append(grammar, production)
 		fmt.Println(production)
 	}
+	return grammar
 }
