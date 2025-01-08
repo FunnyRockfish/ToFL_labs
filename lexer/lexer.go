@@ -21,6 +21,7 @@ const (
 	TOKEN_BACKREFERENCE
 	TOKEN_CHAR
 	TOKEN_SUBPATTERN_REFERENCE
+	TOKEN_ILLEGAL
 )
 
 type Token struct {
@@ -127,8 +128,10 @@ func (l *Lexer) NextToken() Token {
 		tok.Value = string(l.ch)
 		l.readChar()
 	default:
-		tok.Type = TOKEN_EOF
-		tok.Value = ""
+		tok.Type = TOKEN_ILLEGAL
+		tok.Value = string(l.ch)
+		l.logger.Error("Неподдерживаемый символ:", l.ch)
+		l.readChar()
 
 	}
 

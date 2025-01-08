@@ -24,6 +24,7 @@ const (
 )
 
 func main() {
+	handleRegex()
 	r := mux.NewRouter()
 	r.HandleFunc("/buildGrammar", corsMiddleware(doSkeletonGrammar)).Methods(http.MethodPost, http.MethodOptions)
 
@@ -51,6 +52,35 @@ func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func handleRegex() {
+	log := logger.CreateLogger()
+
+	rg := "(?=aaa)a*"
+	lex := lexer.NewLexer(rg)
+	pars := parser.NewParser(lex)
+
+	ast, err := pars.Parse()
+
+	validator := parser.NewValidator(log)
+	isCorrect, errors := validator.Validate(ast)
+	fmt.Println(errors)
+	fmt.Println(isCorrect)
+
+	fileName := "ast.dot"
+	file, err := os.Create(fileName)
+	if err != nil {
+		log.Error(err)
+		return
+	}
+	defer file.Close()
+	parser.PrintASTDot(ast, file)
+
+	cfgBuilder := parser.NewCFGBuilder()
+	cfgBuilder.BuildCFGbyAST(ast)
+	grammar := cfgBuilder.PrintCFG()
+	fmt.Println(grammar)
+}
+
 func doSkeletonGrammar(w http.ResponseWriter, r *http.Request) {
 	log := logger.CreateLogger()
 
@@ -67,7 +97,18 @@ func doSkeletonGrammar(w http.ResponseWriter, r *http.Request) {
 
 	ast, err := pars.Parse()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Ошибка парсинга: %v", err), http.StatusInternalServerError)
+		errs := make([]string, 1)
+		errs[0] = err.Error()
+		response := domain.RegexResponse{
+			IsCorrect: false,
+			Errors:    errs,
+			AST:       nil,
+			Grammar:   nil,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(response)
 		return
 	}
 

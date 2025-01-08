@@ -113,6 +113,8 @@ func (p *Parser) parseTerm() (ASTNode, error) {
 		}
 		node = &SubPatternReference{GroupNumber: num}
 		p.NextToken()
+	case lexer.TOKEN_ILLEGAL:
+		return nil, fmt.Errorf("обнаружен недопустимый символ: '%s'", p.currentToken.Value)
 
 	default:
 		return nil, nil
