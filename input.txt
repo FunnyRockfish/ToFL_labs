@@ -1,0 +1,2 @@
+mode=fuzz_limit
+S-> a b a S b a b | a
