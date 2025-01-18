@@ -370,8 +370,8 @@ func NewValidator(log *zap.SugaredLogger) *Validator {
 		errors: []string{},
 
 		maxGroups:          9,
-		groupsByNumber:     make(map[int]*Group),
-		checkingSubPattern: make(map[int]bool),
+		groupsByNumber:     make(map[int]*Group), // тут храним все объявленные группы
+		checkingSubPattern: make(map[int]bool),   // предотвращаем рекурсию (ставим, что subPattern в обработке
 	}
 }
 
@@ -379,8 +379,8 @@ func (v *Validator) Validate(root ASTNode) (bool, []string) {
 	v.collectAllGroups(root)
 	v.checkLookAheadConstraints(root)
 
-	inSet := make(map[int]bool)
-	_, err := v.computeDefGroups(root, inSet)
+	initializedGroupsSet := make(map[int]bool) // для отслеживания инициализированных групп
+	_, err := v.validateGroupsAndReferences(root, initializedGroupsSet)
 	if err != nil {
 		v.errors = append(v.errors, err.Error())
 	}
@@ -493,55 +493,55 @@ func (v *Validator) containsLookAhead(node ASTNode) bool {
 	}
 }
 
-func (v *Validator) computeDefGroups(node ASTNode, inSet map[int]bool) (map[int]bool, error) {
+func (v *Validator) validateGroupsAndReferences(node ASTNode, inSet map[int]bool) (map[int]bool, error) {
 	switch n := node.(type) {
 
 	case *Char:
 		return copySet(inSet), nil
 
 	case *Concat:
-		leftOut, err := v.computeDefGroups(n.left, copySet(inSet))
+		leftOut, err := v.validateGroupsAndReferences(n.left, copySet(inSet))
 		if err != nil {
 			return nil, err
 		}
-		rightOut, err := v.computeDefGroups(n.right, leftOut)
+		rightOut, err := v.validateGroupsAndReferences(n.right, leftOut)
 		if err != nil {
 			return nil, err
 		}
 		return rightOut, nil
 
 	case *Union:
-		leftOut, err := v.computeDefGroups(n.left, copySet(inSet))
+		leftOut, err := v.validateGroupsAndReferences(n.left, copySet(inSet))
 		if err != nil {
 			return nil, err
 		}
-		rightOut, err := v.computeDefGroups(n.right, copySet(inSet))
+		rightOut, err := v.validateGroupsAndReferences(n.right, copySet(inSet))
 		if err != nil {
 			return nil, err
 		}
-		return intersectSets(leftOut, rightOut), nil
+		return intersectSets(leftOut, rightOut), nil // гарантирует, что только те группы, которые определены во всех возможных путях, остаются
 
 	case *Star:
-		childOut, err := v.computeDefGroups(n.node, copySet(inSet))
+		childOut, err := v.validateGroupsAndReferences(n.node, copySet(inSet))
 		if err != nil {
 			return nil, err
 		}
-		return intersectSets(inSet, childOut), nil
+		return intersectSets(inSet, childOut), nil // гарантирует, что повторение не добавляет новых групп или изменяет существующие
 
 	case *Group:
 		if n.capturing {
-			childOut, err := v.computeDefGroups(n.node, copySet(inSet))
+			childOut, err := v.validateGroupsAndReferences(n.node, copySet(inSet))
 			if err != nil {
 				return nil, err
 			}
 			childOut[n.groupNumber] = true
 			return childOut, nil
 		} else {
-			return v.computeDefGroups(n.node, inSet)
+			return v.validateGroupsAndReferences(n.node, inSet)
 		}
 
 	case *LookAhead:
-		_, err := v.computeDefGroups(n.node, copySet(inSet))
+		_, err := v.validateGroupsAndReferences(n.node, copySet(inSet))
 		return copySet(inSet), err
 
 	case *BackReference:
@@ -558,7 +558,7 @@ func (v *Validator) computeDefGroups(node ASTNode, inSet map[int]bool) (map[int]
 		if v.checkingSubPattern[n.GroupNumber] {
 		} else {
 			v.checkingSubPattern[n.GroupNumber] = true
-			_, err := v.computeDefGroups(grp.node, copySet(inSet))
+			_, err := v.validateGroupsAndReferences(grp.node, copySet(inSet))
 			v.checkingSubPattern[n.GroupNumber] = false
 			if err != nil {
 				return nil, err
@@ -745,7 +745,7 @@ func (cfg *ContextFreeGrammar) BuildCFGbyAST(node ASTNode) string {
 		if cfg.firstSymbol == "" {
 			cfg.firstSymbol = nonTerminal
 			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
-			cfg.Order = append(cfg.Order, "S") // Добавляем S первым
+			cfg.Order = append(cfg.Order, "S")
 		}
 
 		if nonTerminal != "S" && !contains(cfg.Order, nonTerminal) {
@@ -763,7 +763,7 @@ func (cfg *ContextFreeGrammar) BuildCFGbyAST(node ASTNode) string {
 		if cfg.firstSymbol == "" {
 			cfg.firstSymbol = nonTerminal
 			cfg.Grammar["S"] = append(cfg.Grammar["S"], nonTerminal)
-			cfg.Order = append(cfg.Order, "S") // Добавляем S первым
+			cfg.Order = append(cfg.Order, "S")
 		}
 
 		if nonTerminal != "S" && !contains(cfg.Order, nonTerminal) {

@@ -15,7 +15,6 @@ import (
 	"lab4_1/parser"
 )
 
-// ANSI цветовые коды
 const (
 	Reset  = "\033[0m"
 	Red    = "\033[31m"
@@ -35,10 +34,8 @@ func main() {
 	}
 }
 
-// Middleware для обработки CORS и OPTIONS-запросов
 func corsMiddleware(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// Добавляем CORS-заголовки
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "POST, GET, OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
